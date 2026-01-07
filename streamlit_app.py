@@ -1,94 +1,98 @@
 import streamlit as st
 import requests
-import json
+import time
+from urllib.parse import quote
 
-# --- 1. SETUP & SECRETS ---
-# Using the 36-byte HEX key for LiveAvatar sessions as per your .ipynb
+# --- 1. CONFIGURATION ---
 LIVE_KEY = st.secrets["HeyGen"]["LIVE_AVATAR_KEY"]
 BASE_URL = "https://api.liveavatar.com/v1"
-
 HEADERS = {
     "X-API-KEY": LIVE_KEY,
     "accept": "application/json",
     "content-type": "application/json",
 }
 
-# Accurate IDs from your uploaded metadata and notebook
+# Accurate IDs from your setup
 AVATAR_ID = "65f9e3c9-d48b-4118-b73a-4ae2e3cbb8f0"  # June HR
 VOICE_ID = "62bbb4b2-bb26-4727-bc87-cfb2bd4e0cc8"   # June Lifelike
-# Note: In FULL mode, a Context ID is recommended to avoid LLM errors
-CONTEXT_ID = "9d633fe3-d462-49a7-8b06-d9c3fcfad5e9" # 3D-Printing example from your log
+BLANK_CONTEXT_ID = "04951707-afab-4fe5-be9e-d6d3d1233a92"  # Your Blank Context
+FIXED_TEXT = "Hello How Are you- I am JUNE the LIVE avatar from HeyGen."
 
-st.title("Avatar Agentic AI")
-st.subheader("LiveAvatar: June HR")
+st.set_page_config(page_title="June CUSTOM Mode Test")
+st.title("LiveAvatar: June (CUSTOM Mode)")
 
-# --- 2. SESSION LOGIC ---
-def create_live_session():
+# --- 2. SESSION FUNCTIONS ---
+def start_custom_session():
+    # Force CUSTOM mode to prevent default AI interference
     payload = {
-        "mode": "FULL",
+        "mode": "CUSTOM", 
         "avatar_id": AVATAR_ID,
         "avatar_persona": {
             "voice_id": VOICE_ID,
-            "context_id": CONTEXT_ID,
+            "context_id": BLANK_CONTEXT_ID,
             "language": "en"
         }
     }
     
-    # 1. Get Session Token
-    token_resp = requests.post(f"{BASE_URL}/sessions/token", headers=HEADERS, json=payload)
+    # Create Token
+    resp = requests.post(f"{BASE_URL}/sessions/token", headers=HEADERS, json=payload)
+    token_data = resp.json().get("data")
+    if not token_data:
+        st.error(f"Failed to get token: {resp.text}")
+        return None
     
-    if token_resp.status_code != 200:
-        st.error(f"Token Error: {token_resp.text}")
-        return None, None
+    s_token = token_data.get("session_token")
+    
+    # Start Session
+    start_resp = requests.post(
+        f"{BASE_URL}/sessions/start", 
+        headers={"authorization": f"Bearer {s_token}", "accept": "application/json"}
+    )
+    return start_resp.json().get("data"), s_token
 
-    token_json = token_resp.json()
-    # Handle the 'data' wrapper to prevent the 'NoneType' error in your logs 
-    data_wrapper = token_json.get("data")
-    if not data_wrapper:
-        st.error("Invalid response format: Missing 'data' field.")
-        return None, None
+def send_command(s_token, event_type, extra_params=None):
+    # In a full production app, this would use LiveKit publishData.
+    # For this test, we use the REST Command API
+    url = f"{BASE_URL}/sessions/command"
+    payload = {"event_type": event_type}
+    if extra_params:
+        payload.update(extra_params)
         
-    session_token = data_wrapper.get("session_token")
-    
-    # 2. Start the Session
-    start_headers = {
-        "accept": "application/json",
-        "authorization": f"Bearer {session_token}"
-    }
-    start_resp = requests.post(f"{BASE_URL}/sessions/start", headers=start_headers)
-    
-    if start_resp.status_code not in [200, 201]:
-        st.error(f"Start Error: {start_resp.text}")
-        return None, None
-        
-    return start_resp.json().get("data"), session_token
+    requests.post(url, headers={"authorization": f"Bearer {s_token}"}, json=payload)
 
-# --- 3. UI ---
-if st.button("Launch June"):
-    with st.spinner("Establishing Live Connection..."):
-        session_data, s_token = create_live_session()
+# --- 3. UI EXECUTION ---
+if st.button("🚀 Initialize June (CUSTOM Mode)"):
+    data, s_token = start_custom_session()
+    
+    if data:
+        st.success("Session Created. Initializing WebRTC...")
         
-        if session_data:
-            st.success("June is Online!")
-            
-            # Extract LiveKit details for the viewer
-            lk_url = session_data.get("livekit_url")
-            lk_token = session_data.get("livekit_client_token")
-            
-            # Construct the Quick Join URL
-            from urllib.parse import quote
-            viewer_url = f"https://meet.livekit.io/custom?liveKitUrl={quote(lk_url)}&token={quote(lk_token)}"
-            
-            st.markdown(f"### [🚀 Open Interactive View]({viewer_url})")
-            st.info("Once the window opens, June will be ready to respond to your voice or text.")
-            
-            # Store session token in session state for the stop button
-            st.session_state['current_s_token'] = s_token
+        # Open the viewer first so the user can see initialization
+        lk_url = data.get("livekit_url")
+        lk_token = data.get("livekit_client_token")
+        viewer_url = f"https://meet.livekit.io/custom?liveKitUrl={quote(lk_url)}&token={quote(lk_token)}"
+        st.markdown(f"### [👉 OPEN JUNE VIEWER]({viewer_url})")
+        
+        # 90-Second Warm-up Countdown
+        countdown_placeholder = st.empty()
+        for i in range(90, 0, -1):
+            countdown_placeholder.info(f"⏳ June is warming up... Sending command in {i} seconds.")
+            time.sleep(1)
+        
+        # THE OVERRIDE SEQUENCE
+        st.warning("⚡ Sending Interrupt and Fixed Text...")
+        
+        # 1. Interrupt (forget any idle state/context noise)
+        send_command(s_token, "avatar.interrupt")
+        time.sleep(0.5)
+        
+        # 2. Speak Text (The Fixed Sentence)
+        send_command(s_token, "avatar.speak_text", {"text": FIXED_TEXT})
+        
+        st.success("✅ Command Sent! Check the viewer window.")
+        st.session_state['s_token'] = s_token
 
 if st.button("Stop Session"):
-    if 'current_s_token' in st.session_state:
-        stop_headers = {"authorization": f"Bearer {st.session_state['current_s_token']}"}
-        requests.post(f"{BASE_URL}/sessions/stop", headers=stop_headers)
-        st.warning("Session Closed.")
-    else:
-        st.write("No active session to stop.")
+    if 's_token' in st.session_state:
+        requests.post(f"{BASE_URL}/sessions/stop", headers={"authorization": f"Bearer {st.session_state['s_token']}"})
+        st.write("Session terminated.")
